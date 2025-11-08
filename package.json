@@ -1,17 +1,16 @@
 {
-  "name": "brokex-gateway-modular",
+  "name": "brokex-gateway-commonjs",
   "version": "1.0.0",
-  "type": "module",
-  "description": "Gateway modulaire: /proof + /history + WSS /ws/prices (scripts séparés)",
-  "main": "index.mjs",
+  "description": "Gateway modulaire CJS: /proof + /history + WSS /ws/prices",
+  "main": "index.js",
   "scripts": {
-    "start": "node index.mjs",
-    "dev": "node index.mjs"
+    "start": "node index.js",
+    "dev": "NODE_OPTIONS=--trace-warnings node index.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "node-fetch": "^3.3.2",
+    "node-fetch": "^2.6.9",
     "ws": "^8.18.0"
   }
 }
