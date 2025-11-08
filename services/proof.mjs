@@ -8,7 +8,7 @@ const DORA_CHAIN = "evm";
 let PullServiceClient;
 {
   // IMPORTANT: préciser l'extension .js et le bon chemin relatif :
-  const mod = await import("../pullServiceClient.js");
+  const mod = await import("../pullServiceClient.mjs");
   PullServiceClient = mod.default || mod.PullServiceClient || mod;
 }
 
