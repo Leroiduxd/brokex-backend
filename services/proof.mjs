@@ -1,17 +1,20 @@
 // services/proof.mjs
 import express from "express";
-import { createRequire } from "module";
-const require = createRequire(import.meta.url);
 
-// IMPORTANT: PullServiceClient en CommonJS
-const PullServiceClient = require("../pullServiceClient");
-
-const DORA_RPC  = "https://rpc-testnet-dora-2.supra.com"; // <-- modifie si besoin
+const DORA_RPC  = "https://rpc-testnet-dora-2.supra.com";
 const DORA_CHAIN = "evm";
+
+// Charge ESM dynamiquement (Node 20 supporte TLA)
+let PullServiceClient;
+{
+  // IMPORTANT: préciser l'extension .js et le bon chemin relatif :
+  const mod = await import("../pullServiceClient.js");
+  PullServiceClient = mod.default || mod.PullServiceClient || mod;
+}
 
 const router = express.Router();
 const client = new PullServiceClient(DORA_RPC);
-const cache = new Map(); // key = "0,1,2" ; { proof, timestamp }
+const cache = new Map(); // key = "0,1,2" ; value = { proof, timestamp }
 
 async function fetchProof(pairIndexes) {
   const key = [...pairIndexes].sort((a, b) => a - b).join(",");
@@ -26,7 +29,7 @@ async function fetchProof(pairIndexes) {
   console.log(`🌐 [ProofFetch] pairs=[${key}]`);
   const data = await client.getProof({ pair_indexes: pairIndexes, chain_type: DORA_CHAIN });
   const proofBytes = data.proof_bytes;
-  const proof = proofBytes.startsWith("0x") ? proofBytes : "0x" + proofBytes;
+  const proof = String(proofBytes).startsWith("0x") ? proofBytes : "0x" + proofBytes;
 
   cache.set(key, { proof, timestamp: now });
   return proof;
