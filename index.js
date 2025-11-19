@@ -5,8 +5,8 @@ const cors = require('cors');
 
 const proofRouter = require('./services/proof');
 const historyRouter = require('./services/history');
-const { attachPriceWSS, rebalanceScheduler } = require('./services/wsBridge');
-const { attachRawWSS } = require('./services/supraRawWS'); // 👈 NEW
+const { attachPriceWSS, handlePriceUpgrade, rebalanceScheduler } = require('./services/wsBridge');
+const { attachRawWSS, handleRawUpgrade } = require('./services/supraRawWS');
 
 const PORT = 3000; // port unique REST + WSS
 
@@ -23,16 +23,27 @@ app.get('/healthz', (_req, res) => {
   res.json({ ok: true, ts: Date.now(), v: 'gateway-cjs-1.0.0' });
 });
 
-// HTTP server (WSS attaché sur le même port)
+// HTTP server
 const server = http.createServer(app);
 
-// 1) WSS "propre" existant
-attachPriceWSS(server);
+// Initialise les deux WebSocketServer (sans leur donner `server` directement)
+attachPriceWSS();
+attachRawWSS();
 
-// 2) NOUVEAU WSS "brut" Supra
-attachRawWSS(server);
+// Route les upgrades WebSocket selon le path
+server.on('upgrade', (req, socket, head) => {
+  if (req.url === '/ws/prices') {
+    return handlePriceUpgrade(req, socket, head);
+  }
+  if (req.url === '/ws/raw') {
+    return handleRawUpgrade(req, socket, head);
+  }
 
-// Démarre le scheduler (rebalance horaires + refresh REST)
+  // Autres chemins → on ferme
+  socket.destroy();
+});
+
+// Scheduler (Supra WS + REST refresh)
 rebalanceScheduler();
 
 server.listen(PORT, () => {
@@ -42,4 +53,5 @@ server.listen(PORT, () => {
   console.log(`   - WSS /ws/prices (snapshot mix Supra+REST)`);
   console.log(`   - WSS /ws/raw (flux brut Supra enrichi pairId/pairName)`);
 });
+
 
