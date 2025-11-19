@@ -86,7 +86,6 @@ function connectSupraAndBridge() {
     }
 
     if (msg.event === 'ohlc_datafeed' && Array.isArray(msg.payload)) {
-      // Enrichir chaque tick avec pairId + pairName
       const enrichedPayload = msg.payload.map((tick) => {
         const p = tick.tradingPair;
         const pairId = REVERSE_MAP[p] ?? null;
@@ -94,11 +93,7 @@ function connectSupraAndBridge() {
           ? p.toUpperCase().replace('_USD', '/USD').replace('_USDT', '/USDT')
           : null;
 
-        return {
-          ...tick,
-          pairId,
-          pairName
-        };
+        return { ...tick, pairId, pairName };
       });
 
       const out = JSON.stringify({
@@ -106,14 +101,12 @@ function connectSupraAndBridge() {
         payload: enrichedPayload
       });
 
-      // Broadcast brut à tous les clients /ws/raw
       wssRaw.clients.forEach((client) => {
         if (client.readyState === WebSocket.OPEN) {
           client.send(out);
         }
       });
     } else {
-      // Autres messages Supra (erreurs etc.) → on peut les forward aussi si tu veux
       const out = JSON.stringify(msg);
       wssRaw.clients.forEach((client) => {
         if (client.readyState === WebSocket.OPEN) {
@@ -134,13 +127,11 @@ function connectSupraAndBridge() {
 }
 
 /**
- * Monte un nouveau WebSocket local sur /ws/raw
- * qui renvoie les messages Supra enrichis (pairId + pairName)
+ * Initialise le WebSocketServer pour /ws/raw (sans attacher le server ici)
  */
-function attachRawWSS(server) {
+function attachRawWSS() {
   wssRaw = new WebSocketServer({
-    server,
-    path: '/ws/raw'
+    noServer: true
   });
 
   log('✅ Local raw WSS mounted at /ws/raw');
@@ -153,8 +144,18 @@ function attachRawWSS(server) {
     }));
   });
 
-  // Démarre la connexion Supra si ce n'est pas déjà fait
   connectSupraAndBridge();
 }
 
-module.exports = { attachRawWSS };
+// 🔁 Handler d’upgrade pour /ws/raw
+function handleRawUpgrade(req, socket, head) {
+  if (!wssRaw) {
+    socket.destroy();
+    return;
+  }
+  wssRaw.handleUpgrade(req, socket, head, (ws) => {
+    wssRaw.emit('connection', ws, req);
+  });
+}
+
+module.exports = { attachRawWSS, handleRawUpgrade };
