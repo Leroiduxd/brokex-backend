@@ -18,6 +18,7 @@ const PAIRS = [
   'xag_usd','xau_usd','btc_usdt','eth_usdt','sol_usdt','xrp_usdt','avax_usdt','doge_usdt','trx_usdt',
   'ada_usdt','sui_usdt','link_usdt','orcle_usd','wti_usd','nike_usd','spdia_usd','qqqm_usd','iwm_usd'
 ];
+
 const ALIASES = { orcle_usd: 'orcl_usd', nike_usd: 'nke_usd', spdia_usd: 'dia_usd' };
 const normalize = (t) => ALIASES[t] || t;
 
@@ -66,12 +67,14 @@ function partsFromTZ(date, timeZone) {
   const minute = +parts.find(p => p.type === 'minute')?.value;
   return { wd: WD[wdStr] ?? 0, hour, minute };
 }
+
 function isUsEquityOpen(d = new Date()) {
   const { wd, hour, minute } = partsFromTZ(d, TZ_NY);
   if (wd <= 0 || wd === 6) return false;
   const m = hour * 60 + minute;
   return m >= 9 * 60 + 30 && m < 16 * 60 + 30;
 }
+
 function isForexLikeOpen(d = new Date()) {
   const { wd, hour } = partsFromTZ(d, TZ_PARIS);
   if (wd === 0) return hour >= 22;
@@ -79,6 +82,7 @@ function isForexLikeOpen(d = new Date()) {
   if (wd === 5) return hour < 23;
   return false;
 }
+
 const isCryptoOpen = () => true;
 
 function initCache(p) {
@@ -87,6 +91,7 @@ function initCache(p) {
     state[p] = { id: m.id ?? null, name: m.name || 'UNKNOWN' };
   }
 }
+
 function upsertFromWS(item) {
   const p = normalize(item.tradingPair || '');
   if (!p) return;
@@ -96,10 +101,15 @@ function upsertFromWS(item) {
   if (item.time != null) state[p].wsTime = String(item.time);
   if (item.timestamp) state[p].wsTimestamp = item.timestamp;
 }
+
 async function fetchLatestREST(p) {
   try {
     const r = await fetch(`${REST_BASE}/latest?trading_pair=${p}`, { headers: { 'x-api-key': SUPRA_API_KEY } });
-    if (!r.ok) { if (r.status === 429) console.warn(`[REST] 429 ${p}`); else console.warn(`[REST] ${r.status} ${p}`); return; }
+    if (!r.ok) {
+      if (r.status === 429) console.warn(`[REST] 429 ${p}`);
+      else console.warn(`[REST] ${r.status} ${p}`);
+      return;
+    }
     const raw = await r.json().catch(() => ({}));
     const d = Array.isArray(raw?.instruments) ? raw.instruments[0] : null;
     if (!d) return;
@@ -109,8 +119,11 @@ async function fetchLatestREST(p) {
     if (d['24h_change'] != null) state[p].ch24 = String(d['24h_change']);
     if (d.timestamp) state[p].restTimestamp = d.timestamp;
     if (d.time != null) state[p].restTime = String(d.time);
-  } catch (e) { console.error(`[REST] ${p}:`, e?.message); }
+  } catch (e) {
+    console.error(`[REST] ${p}:`, e?.message);
+  }
 }
+
 async function fetchOnceREST(pairs) {
   for (const raw of pairs) {
     const p = normalize(raw);
@@ -119,7 +132,9 @@ async function fetchOnceREST(pairs) {
     await sleep(MIN_GAP_MS);
   }
 }
+
 function isPairOpen(p) { return currentWSSet.includes(p); }
+
 function buildPageForPair(p) {
   const meta = META[p] || { id: null, name: 'UNKNOWN' };
   const s = state[p] || {};
@@ -137,23 +152,49 @@ function buildPageForPair(p) {
     '24h_change': s.ch24 ?? undefined,
     tradingPair: p
   }] : [];
-  return { id: meta.id ?? null, name: meta.name || 'UNKNOWN', currentPage: 1, totalPages: 1, totalRecords: instruments.length, pageSize: 1, instruments };
+  return {
+    id: meta.id ?? null,
+    name: meta.name || 'UNKNOWN',
+    currentPage: 1,
+    totalPages: 1,
+    totalRecords: instruments.length,
+    pageSize: 1,
+    instruments
+  };
 }
+
 function buildSnapshot() {
   const out = {};
-  for (const raw of PAIRS) { const p = normalize(raw); out[p] = buildPageForPair(p); }
+  for (const raw of PAIRS) {
+    const p = normalize(raw);
+    out[p] = buildPageForPair(p);
+  }
   return JSON.stringify(out);
 }
-function setsDiff(a, b) { const A=new Set(a), B=new Set(b); const add=[...B].filter(x=>!A.has(x)); const del=[...A].filter(x=>!B.has(x)); return { add, del, changed: add.length || del.length }; }
+
+function setsDiff(a, b) {
+  const A = new Set(a), B = new Set(b);
+  const add = [...B].filter(x => !A.has(x));
+  const del = [...A].filter(x => !B.has(x));
+  return { add, del, changed: add.length || del.length };
+}
+
 function computeOpenSets() {
   const openPairs = new Set(), closedPairs = new Set();
   const openCrypto = isCryptoOpen(), openFx = isForexLikeOpen(), openEq = isUsEquityOpen();
+
   for (const p of CRYPTO) (openCrypto ? openPairs : closedPairs).add(normalize(p));
   for (const p of [...FOREX, ...COMMODITIES]) (openFx ? openPairs : closedPairs).add(normalize(p));
   for (const p of [...US_EQ, ...US_ETF]) (openEq ? openPairs : closedPairs).add(normalize(p));
-  for (const raw of PAIRS) { const p = normalize(raw); if (!openPairs.has(p) && !closedPairs.has(p)) closedPairs.add(p); }
+
+  for (const raw of PAIRS) {
+    const p = normalize(raw);
+    if (!openPairs.has(p) && !closedPairs.has(p)) closedPairs.add(p);
+  }
+
   return { open: [...openPairs], closed: [...closedPairs] };
 }
+
 function openSupraWS(pairs) {
   try { if (supraWS) supraWS.close(); } catch {}
   currentWSSet = [...pairs];
@@ -162,7 +203,14 @@ function openSupraWS(pairs) {
   supraWS.on('open', () => {
     console.log(`[SupraWS] Open. Subscribing to ${pairs.length} pairs.`);
     for (const g of chunk(pairs, CHUNK_SIZE)) {
-      const msg = { action: 'subscribe', channels: [{ name: 'ohlc_datafeed', resolution: RESOLUTION, tradingPairs: g }] };
+      const msg = {
+        action: 'subscribe',
+        channels: [{
+          name: 'ohlc_datafeed',
+          resolution: RESOLUTION,
+          tradingPairs: g
+        }]
+      };
       supraWS.send(JSON.stringify(msg));
     }
   });
@@ -174,26 +222,37 @@ function openSupraWS(pairs) {
         for (const k of msg.payload) upsertFromWS(k);
         const payload = buildSnapshot();
         if (wss) {
-          wss.clients.forEach((c) => { if (c.readyState === 1) { try { c.send(payload); } catch {} } });
+          wss.clients.forEach((c) => {
+            if (c.readyState === WebSocket.OPEN) {
+              try { c.send(payload); } catch {}
+            }
+          });
         }
       }
-    } catch {}
+    } catch {
+      // ignore parse errors
+    }
   });
 
   supraWS.on('error', (e) => console.error('[SupraWS] error:', e?.message || e));
-  supraWS.on('close', () => { console.log('[SupraWS] closed.'); currentWSSet = []; });
+  supraWS.on('close', () => {
+    console.log('[SupraWS] closed.');
+    currentWSSet = [];
+  });
 }
 
 async function rebalance() {
   console.log('[Rebalance] evaluate market hours...');
   const { open, closed } = computeOpenSets();
   const { changed } = setsDiff(currentWSSet, open);
+
   if (changed) {
     console.log(`[Rebalance] WS set changed -> resubscribe (${open.length} pairs)`);
     openSupraWS(open);
   } else {
     currentWSSet = open;
   }
+
   const all = [...closed, ...open];
   if (all.length) {
     console.log(`[Rebalance] REST refresh for ${all.length} pairs`);
@@ -201,10 +260,13 @@ async function rebalance() {
   }
 }
 
-function attachPriceWSS(server) {
+/**
+ * Initialise le WebSocketServer pour /ws/prices (sans attacher le server ici)
+ * → endpoint inchangé pour les clients : ws://.../ws/prices
+ */
+function attachPriceWSS() {
   wss = new WebSocketServer({
-    server,
-    path: '/ws/prices',
+    noServer: true,
     perMessageDeflate: {
       zlibDeflateOptions: { level: 9 },
       zlibInflateOptions: { chunkSize: 1024 },
@@ -226,7 +288,11 @@ function attachPriceWSS(server) {
   // Tick global (1s)
   setInterval(() => {
     const payload = buildSnapshot();
-    wss.clients.forEach((c) => { if (c.readyState === 1) { try { c.send(payload); } catch {} } });
+    wss.clients.forEach((c) => {
+      if (c.readyState === WebSocket.OPEN) {
+        try { c.send(payload); } catch {}
+      }
+    });
   }, 1000);
 
   // Heartbeat
@@ -239,9 +305,28 @@ function attachPriceWSS(server) {
   }, 30000);
 }
 
+/**
+ * Handler d'upgrade pour /ws/prices
+ * Appelé depuis server.on('upgrade') dans index.js
+ */
+function handlePriceUpgrade(req, socket, head) {
+  if (!wss) {
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req);
+  });
+}
+
 function rebalanceScheduler() {
   (async () => { await rebalance(); })();
   setInterval(rebalance, REFRESH_MS);
 }
 
-module.exports = { attachPriceWSS, rebalanceScheduler };
+module.exports = {
+  attachPriceWSS,
+  handlePriceUpgrade,
+  rebalanceScheduler
+};
+
