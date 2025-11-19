@@ -6,6 +6,7 @@ const cors = require('cors');
 const proofRouter = require('./services/proof');
 const historyRouter = require('./services/history');
 const { attachPriceWSS, rebalanceScheduler } = require('./services/wsBridge');
+const { attachRawWSS } = require('./services/supraRawWS'); // 👈 NEW
 
 const PORT = 3000; // port unique REST + WSS
 
@@ -25,8 +26,11 @@ app.get('/healthz', (_req, res) => {
 // HTTP server (WSS attaché sur le même port)
 const server = http.createServer(app);
 
-// Monte le WebSocket /ws/prices
+// 1) WSS "propre" existant
 attachPriceWSS(server);
+
+// 2) NOUVEAU WSS "brut" Supra
+attachRawWSS(server);
 
 // Démarre le scheduler (rebalance horaires + refresh REST)
 rebalanceScheduler();
@@ -35,6 +39,7 @@ server.listen(PORT, () => {
   console.log(`🚀 REST+WSS listening on http://127.0.0.1:${PORT}`);
   console.log(`   - GET /proof?pairs=0,1,2`);
   console.log(`   - GET /history?pair=1&interval=3600`);
-  console.log(`   - WSS /ws/prices`);
+  console.log(`   - WSS /ws/prices (snapshot mix Supra+REST)`);
+  console.log(`   - WSS /ws/raw (flux brut Supra enrichi pairId/pairName)`);
 });
 
