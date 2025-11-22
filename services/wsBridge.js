@@ -3,7 +3,7 @@ const { WebSocketServer, WebSocket } = require('ws');
 const fetch = require('node-fetch');
 
 // === CONFIG en dur ===
-const SUPRA_API_KEY = '1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2'; // <-- mets TA clé
+const SUPRA_API_KEY = '4b8e7f3a1d9c6b2e5f0a8d7e1c4b9f2a3d5e6c7f8a0b1d3e2f4c5a9b7d0e8'; // <-- mets TA clé
 const REST_BASE = 'https://prod-kline-rest.supra.com';
 const WS_URL = 'wss://prod-kline-ws.supra.com';
 
