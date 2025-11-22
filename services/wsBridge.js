@@ -3,7 +3,7 @@ const { WebSocketServer, WebSocket } = require('ws');
 const fetch = require('node-fetch');
 
 // === CONFIG en dur ===
-const SUPRA_API_KEY = '4b8e7f3a1d9c6b2e5f0a8d7e1c4b9f2a3d5e6c7f8a0b1d3e2f4c5a9b7d0e8'; // <-- mets TA clé
+const SUPRA_API_KEY = '1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2'; // <-- mets TA clé
 const REST_BASE = 'https://prod-kline-rest.supra.com';
 const WS_URL = 'wss://prod-kline-ws.supra.com';
 
@@ -56,7 +56,13 @@ let wss = null;
 // 🔻 Watchdog d’inactivité Supra
 let supraWSLastActivity = 0;
 let supraWSInactivityTimer = null;
-const SUPRA_INACTIVITY_LIMIT_MS = 2000; // 2 secondes sans data = on reconnecte
+// On passe à 10 secondes pour éviter les reconnexions inutiles
+const SUPRA_INACTIVITY_LIMIT_MS = 10000;
+
+// 🔻 Fallback REST pour flux “stale”
+const STALE_WS_MAX_AGE_MS = 10000;              // si pas de WS depuis > 10s → considéré stale
+const REST_STALE_REFRESH_INTERVAL_MS = 5000;    // REST max toutes les 5s par paire
+let staleRestIntervalStarted = false;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const chunk = (arr, size) => {
@@ -110,7 +116,12 @@ const isCryptoOpen = () => true;
 function initCache(p) {
   if (!state[p]) {
     const m = META[p] || { id: null, name: 'UNKNOWN' };
-    state[p] = { id: m.id ?? null, name: m.name || 'UNKNOWN' };
+    state[p] = {
+      id: m.id ?? null,
+      name: m.name || 'UNKNOWN',
+      lastWsMs: 0,
+      lastRestMs: 0
+    };
   }
 }
 
@@ -118,10 +129,14 @@ function upsertFromWS(item) {
   const p = normalize(item.tradingPair || '');
   if (!p) return;
   initCache(p);
+  const s = state[p];
+
   const live = item.currentPrice ?? item.close;
-  if (live != null) state[p].wsPriceStr = String(live);
-  if (item.time != null) state[p].wsTime = String(item.time);
-  if (item.timestamp) state[p].wsTimestamp = item.timestamp;
+  if (live != null) s.wsPriceStr = String(live);
+  if (item.time != null) s.wsTime = String(item.time);
+  if (item.timestamp) s.wsTimestamp = item.timestamp;
+
+  s.lastWsMs = Date.now();
 }
 
 async function fetchLatestREST(p) {
@@ -135,12 +150,18 @@ async function fetchLatestREST(p) {
     const raw = await r.json().catch(() => ({}));
     const d = Array.isArray(raw?.instruments) ? raw.instruments[0] : null;
     if (!d) return;
-    if (d.currentPrice != null) state[p].restPriceStr = String(d.currentPrice);
-    if (d['24h_high'] != null)   state[p].h24 = String(d['24h_high']);
-    if (d['24h_low']  != null)   state[p].l24 = String(d['24h_low']);
-    if (d['24h_change'] != null) state[p].ch24 = String(d['24h_change']);
-    if (d.timestamp) state[p].restTimestamp = d.timestamp;
-    if (d.time != null) state[p].restTime = String(d.time);
+
+    initCache(p);
+    const s = state[p];
+
+    if (d.currentPrice != null) s.restPriceStr = String(d.currentPrice);
+    if (d['24h_high'] != null)   s.h24 = String(d['24h_high']);
+    if (d['24h_low']  != null)   s.l24 = String(d['24h_low']);
+    if (d['24h_change'] != null) s.ch24 = String(d['24h_change']);
+    if (d.timestamp) s.restTimestamp = d.timestamp;
+    if (d.time != null) s.restTime = String(d.time);
+
+    s.lastRestMs = Date.now();
   } catch (e) {
     console.error(`[REST] ${p}:`, e?.message);
   }
@@ -224,7 +245,7 @@ function computeOpenSets() {
 
 /**
  * Connexion au WebSocket Supra avec watchdog d’inactivité.
- * Si > 2s sans message, on ferme et on rouvre avec les mêmes paires.
+ * Si > 10s sans message, on ferme et on rouvre avec les mêmes paires.
  */
 function openSupraWS(pairs) {
   // Nettoyer ancienne connexion & timer
@@ -262,7 +283,7 @@ function openSupraWS(pairs) {
       thisWS.send(JSON.stringify(msg));
     }
 
-    // Watchdog d'inactivité : si > 2s sans message, on reconnecte
+    // Watchdog d'inactivité : si > 10s sans message, on reconnecte
     supraWSInactivityTimer = setInterval(() => {
       // Si cette connexion n'est plus la connexion active, on ignore
       if (supraWS !== thisWS) return;
@@ -276,7 +297,7 @@ function openSupraWS(pairs) {
         // on ré-ouvre avec le même set de paires
         openSupraWS(currentWSSet);
       }
-    }, 500); // check toutes les 500ms
+    }, 1000); // check chaque seconde
   });
 
   thisWS.on('message', (buf) => {
@@ -341,6 +362,48 @@ async function rebalance() {
 }
 
 /**
+ * Fallback REST plus agressif pour les paires “stale” côté WS.
+ * – vérifie toutes les 1s
+ * – si pas de WS depuis > 10s et pas de REST depuis > 5s → refait un REST.
+ */
+function startStaleRestRefresher() {
+  if (staleRestIntervalStarted) return;
+  staleRestIntervalStarted = true;
+
+  setInterval(() => {
+    (async () => {
+      const now = Date.now();
+      const candidates = [];
+
+      for (const p of currentWSSet) {
+        const s = state[p];
+        if (!s) continue;
+        const lastWs = s.lastWsMs || 0;
+        const lastRest = s.lastRestMs || 0;
+
+        const wsAge = now - lastWs;
+        const restAge = now - lastRest;
+
+        if (wsAge > STALE_WS_MAX_AGE_MS && restAge > REST_STALE_REFRESH_INTERVAL_MS) {
+          candidates.push(p);
+        }
+      }
+
+      if (candidates.length) {
+        console.log(`[REST-Stale] Refreshing ${candidates.length} stale pairs via REST`);
+      }
+
+      for (const p of candidates) {
+        await fetchLatestREST(p);
+        await sleep(MIN_GAP_MS);
+      }
+    })().catch((e) => {
+      console.error('[REST-Stale] loop error:', e?.message);
+    });
+  }, 1000); // check toutes les 1s
+}
+
+/**
  * Initialise le WebSocketServer pour /ws/prices (sans attacher le server ici)
  * → endpoint inchangé pour les clients : ws://.../ws/prices
  */
@@ -402,6 +465,7 @@ function handlePriceUpgrade(req, socket, head) {
 function rebalanceScheduler() {
   (async () => { await rebalance(); })();
   setInterval(rebalance, REFRESH_MS);
+  startStaleRestRefresher();
 }
 
 module.exports = {
@@ -409,4 +473,3 @@ module.exports = {
   handlePriceUpgrade,
   rebalanceScheduler
 };
-
