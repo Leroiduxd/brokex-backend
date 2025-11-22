@@ -53,13 +53,35 @@ let currentWSSet = [];
 let supraWS = null;
 let wss = null;
 
+// 🔻 Watchdog d’inactivité Supra
+let supraWSLastActivity = 0;
+let supraWSInactivityTimer = null;
+const SUPRA_INACTIVITY_LIMIT_MS = 2000; // 2 secondes sans data = on reconnecte
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const chunk = (arr, size) => { const out=[]; for (let i=0;i<arr.length;i+=size) out.push(arr.slice(i,i+size)); return out; };
+const chunk = (arr, size) => {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+};
+
+function clearSupraInactivityTimer() {
+  if (supraWSInactivityTimer) {
+    clearInterval(supraWSInactivityTimer);
+    supraWSInactivityTimer = null;
+  }
+}
 
 function partsFromTZ(date, timeZone) {
   const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone, weekday:'short', hour:'2-digit', minute:'2-digit', hour12:false,
-    year:'numeric', month:'2-digit', day:'2-digit'
+    timeZone,
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
   });
   const parts = fmt.formatToParts(date);
   const wdStr = parts.find(p => p.type === 'weekday')?.value;
@@ -70,16 +92,16 @@ function partsFromTZ(date, timeZone) {
 
 function isUsEquityOpen(d = new Date()) {
   const { wd, hour, minute } = partsFromTZ(d, TZ_NY);
-  if (wd <= 0 || wd === 6) return false;
+  if (wd <= 0 || wd === 6) return false; // dimanche ou samedi
   const m = hour * 60 + minute;
-  return m >= 9 * 60 + 30 && m < 16 * 60 + 30;
+  return m >= 9 * 60 + 30 && m < 16 * 60 + 30; // 9h30–16h30 NY
 }
 
 function isForexLikeOpen(d = new Date()) {
   const { wd, hour } = partsFromTZ(d, TZ_PARIS);
-  if (wd === 0) return hour >= 22;
-  if (wd >= 1 && wd <= 4) return true;
-  if (wd === 5) return hour < 23;
+  if (wd === 0) return hour >= 22;      // dimanche 22h+
+  if (wd >= 1 && wd <= 4) return true;  // lundi–jeudi H24
+  if (wd === 5) return hour < 23;       // vendredi jusqu’à 23h
   return false;
 }
 
@@ -133,7 +155,9 @@ async function fetchOnceREST(pairs) {
   }
 }
 
-function isPairOpen(p) { return currentWSSet.includes(p); }
+function isPairOpen(p) {
+  return currentWSSet.includes(p);
+}
 
 function buildPageForPair(p) {
   const meta = META[p] || { id: null, name: 'UNKNOWN' };
@@ -180,8 +204,11 @@ function setsDiff(a, b) {
 }
 
 function computeOpenSets() {
-  const openPairs = new Set(), closedPairs = new Set();
-  const openCrypto = isCryptoOpen(), openFx = isForexLikeOpen(), openEq = isUsEquityOpen();
+  const openPairs = new Set();
+  const closedPairs = new Set();
+  const openCrypto = isCryptoOpen();
+  const openFx = isForexLikeOpen();
+  const openEq = isUsEquityOpen();
 
   for (const p of CRYPTO) (openCrypto ? openPairs : closedPairs).add(normalize(p));
   for (const p of [...FOREX, ...COMMODITIES]) (openFx ? openPairs : closedPairs).add(normalize(p));
@@ -195,13 +222,34 @@ function computeOpenSets() {
   return { open: [...openPairs], closed: [...closedPairs] };
 }
 
+/**
+ * Connexion au WebSocket Supra avec watchdog d’inactivité.
+ * Si > 2s sans message, on ferme et on rouvre avec les mêmes paires.
+ */
 function openSupraWS(pairs) {
-  try { if (supraWS) supraWS.close(); } catch {}
+  // Nettoyer ancienne connexion & timer
+  try {
+    if (supraWS) supraWS.close();
+  } catch {}
+  clearSupraInactivityTimer();
+
   currentWSSet = [...pairs];
   supraWS = new WebSocket(WS_URL, { headers: { 'x-api-key': SUPRA_API_KEY } });
 
-  supraWS.on('open', () => {
+  // Référence locale pour éviter les effets de bord en cas de reconnexion
+  const thisWS = supraWS;
+
+  thisWS.on('open', () => {
+    // Si entre-temps une nouvelle connexion a été créée, on ignore celle-ci
+    if (supraWS !== thisWS) {
+      console.log('[SupraWS] open (stale) -> ignored');
+      return;
+    }
+
     console.log(`[SupraWS] Open. Subscribing to ${pairs.length} pairs.`);
+    supraWSLastActivity = Date.now(); // on vient d'ouvrir
+
+    // Abonnements
     for (const g of chunk(pairs, CHUNK_SIZE)) {
       const msg = {
         action: 'subscribe',
@@ -211,11 +259,33 @@ function openSupraWS(pairs) {
           tradingPairs: g
         }]
       };
-      supraWS.send(JSON.stringify(msg));
+      thisWS.send(JSON.stringify(msg));
     }
+
+    // Watchdog d'inactivité : si > 2s sans message, on reconnecte
+    supraWSInactivityTimer = setInterval(() => {
+      // Si cette connexion n'est plus la connexion active, on ignore
+      if (supraWS !== thisWS) return;
+      if (!thisWS || thisWS.readyState !== WebSocket.OPEN) return;
+
+      const diff = Date.now() - supraWSLastActivity;
+      if (diff > SUPRA_INACTIVITY_LIMIT_MS) {
+        console.warn(`[SupraWS] No data for ${diff} ms, attempting reconnect...`);
+        clearSupraInactivityTimer();
+        try { thisWS.terminate(); } catch {}
+        // on ré-ouvre avec le même set de paires
+        openSupraWS(currentWSSet);
+      }
+    }, 500); // check toutes les 500ms
   });
 
-  supraWS.on('message', (buf) => {
+  thisWS.on('message', (buf) => {
+    // Ignorer les vieux sockets
+    if (supraWS !== thisWS) return;
+
+    // On a reçu un message -> on reset le timer d'inactivité
+    supraWSLastActivity = Date.now();
+
     try {
       const msg = JSON.parse(buf.toString());
       if (msg.event === 'ohlc_datafeed' && Array.isArray(msg.payload)) {
@@ -234,9 +304,19 @@ function openSupraWS(pairs) {
     }
   });
 
-  supraWS.on('error', (e) => console.error('[SupraWS] error:', e?.message || e));
-  supraWS.on('close', () => {
-    console.log('[SupraWS] closed.');
+  thisWS.on('error', (e) => {
+    if (supraWS !== thisWS) return; // vieux socket, on s'en fout
+    console.error('[SupraWS] error:', e?.message || e);
+    clearSupraInactivityTimer();
+  });
+
+  thisWS.on('close', () => {
+    if (supraWS !== thisWS) {
+      console.log('[SupraWS] closed (stale) -> ignored');
+      return;
+    }
+    console.log('[SupraWS] closed (active).');
+    clearSupraInactivityTimer();
     currentWSSet = [];
   });
 }
@@ -295,7 +375,7 @@ function attachPriceWSS() {
     });
   }, 1000);
 
-  // Heartbeat
+  // Heartbeat (pour tes clients, pas pour Supra)
   setInterval(() => {
     wss.clients.forEach((c) => {
       if (c.isAlive === false) c.terminate();
