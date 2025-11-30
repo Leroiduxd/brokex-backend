@@ -10,9 +10,9 @@ const WS_URL = 'wss://prod-kline-ws.supra.com';
 const RESOLUTION = 1;
 const CHUNK_SIZE = 30;
 const REFRESH_MS = 2 * 60 * 1000; // re-évalue horaires toutes les 2 min
-const MIN_GAP_MS = 250;
+const MIN_GAP_MS = 50; // 🟢 DÉLAI RÉDUIT À 50ms ENTRE CHAQUE APPEL REST
 
-// 🟢 LISTE DES PAIRES MISE À JOUR (Paires listées, sans les paires de devises demandées)
+// 🟢 LISTE DES PAIRES MISE À JOUR (Sans pays exclus, sans xg_usd)
 const PAIRS = [
     // US Stocks & ETFs (6000-6111)
     'tsla_usd','msft_usd','nvda_usd','goog_usd','aapl_usd','amzn_usd','meta_usd','nflx_usd','pypl_usd','intc_usd',
@@ -26,28 +26,28 @@ const PAIRS = [
     'amgn_usd','etn_usd','hon_usd','cmcsa_usd','pgr_usd','tjx_usd','syk_usd','bx_usd','anet_usd','de_usd',
     'cop_usd','ba_usd','adp_usd','bmy_usd','panw_usd','schw_usd','fi_usd','gild_usd','gev_usd','mdt_usd',
     'vrtx_usd','sbux_usd',
-    // ETFs from previous step (dia_usd, qqqm_usd, iwm_usd)
+    // ETFs
     'spdia_usd','qqqm_usd','iwm_usd',
-    // Forex (5000) - SANS USD_NGN, USD_ARS, USD_IDR, USD_BRL, USD_PKR, USD_UAH, USD_PHP, USD_VND
+    // Forex (Sans devises exotiques exclues)
     'eur_usd','usd_jpy','gbp_usd','eur_gbp','usd_krw','usd_hkd','usd_inr','usd_cny','usd_sgd','usd_thb',
     'aud_usd','usd_cad','usd_chf','nzd_usd','usd_rub',
     'usd_try','eur_aud','gbp_jpy','chf_jpy','eur_chf','aud_jpy','gbp_cad',
     'nzd_jpy',
-    // Commodities (5500)
-    'xau_usd','xag_usd','wti_usd','xpd_usd','xpt_usd','xg_usd' 
+    // Commodities (Sans xg_usd)
+    'xau_usd','xag_usd','wti_usd','xpd_usd','xpt_usd'
 ];
 
-// 🟢 ALIASES MIS À JOUR (Correction des typos courantes + le format MSTR)
+// 🟢 ALIASES
 const ALIASES = { 
     'orcle_usd': 'orcl_usd', 
     'nike_usd': 'nke_usd', 
     'spdia_usd': 'dia_usd',
-    'mstr/usd': 'mstr_usd', // Simplification de MSTR/USD en MSTR_USD pour la cohérence
-    'spy_usd': 'spy_usd'     // Laisse SPY_USD tel quel
+    'mstr/usd': 'mstr_usd',
+    'spy_usd': 'spy_usd'
 };
 const normalize = (t) => ALIASES[t] || t;
 
-// 🟢 OBJET META MIS À JOUR (SANS les paires de devises demandées)
+// 🟢 META (Sans xg_usd ni devises exclues)
 const META = {
     // 6000: US Equities & ETFs
     'tsla_usd':{id:6000,name:'TESLA INC'},
@@ -84,12 +84,12 @@ const META = {
     'snap_usd':{id:6031,name:'SNAP INC.'},
     'uber_usd':{id:6032,name:'UBER TECHNOLOGIES, INC.'},
     'zm_usd':{id:6033,name:'ZOOM VIDEO COMMUNICATIONS, INC.'},
-    'nke_usd':{id:6034,name:'NIKE INC'}, // Aliasé à partir de nike_usd
+    'nke_usd':{id:6034,name:'NIKE INC'},
     'jnj_usd':{id:6035,name:'JOHNSON & JOHNSON'},
     'pg_usd':{id:6036,name:'THE PROCTER & GAMBLE COMPANY'},
     'cost_usd':{id:6037,name:'COSTCO WHOLESALE CORPORATION'},
-    'orcl_usd':{id:6038,name:'ORACLE CORPORATION'}, // Aliasé à partir de orcle_usd
-    'mstr_usd':{id:6039,name:'MICROSTRATEGY INCORPORATED'}, // Aliasé à partir de mstr/usd
+    'orcl_usd':{id:6038,name:'ORACLE CORPORATION'},
+    'mstr_usd':{id:6039,name:'MICROSTRATEGY INCORPORATED'},
     'spy_usd':{id:6040,name:'SPDR S&P 500 ETF TRUST'},
     'v_usd':{id:6051,name:'VISA INC.'},
     'ma_usd':{id:6052,name:'MASTERCARD INCORPORATED'},
@@ -152,11 +152,11 @@ const META = {
     'mdt_usd':{id:6109,name:'MEDTRONIC PLC'},
     'vrtx_usd':{id:6110,name:'VERTEX PHARMACEUTICALS INCORPORATED'},
     'sbux_usd':{id:6111,name:'STARBUCKS CORPORATION'},
-    'dia_usd':{id:6113,name:'SPDR DOW JONES (DIA)'}, // Aliasé à partir de spdia_usd
+    'dia_usd':{id:6113,name:'SPDR DOW JONES (DIA)'},
     'qqqm_usd':{id:6114,name:'NASDAQ-100 ETF (QQQM)'},
     'iwm_usd':{id:6115,name:'ISHARES RUSSELL 2000 ETF (IWM)'},
 
-    // 5000: Forex - SANS USD_NGN, USD_ARS, USD_IDR, USD_BRL, USD_PKR, USD_UAH, USD_PHP, USD_VND
+    // 5000: Forex
     'eur_usd':{id:5000,name:'EURO/US DOLLAR'},
     'usd_jpy':{id:5001,name:'US DOLLAR/JAPANESE YEN'},
     'gbp_usd':{id:5002,name:'GREAT BRITAIN POUND/US DOLLAR'},
@@ -171,16 +171,8 @@ const META = {
     'usd_cad':{id:5011,name:'US DOLLAR/CANADIAN DOLLAR'},
     'usd_chf':{id:5012,name:'US DOLLAR/SWISS FRANC'},
     'nzd_usd':{id:5013,name:'NEW ZEALAND DOLLAR/US DOLLAR'},
-    // usd_vnd: {id:5014, name:'US DOLLAR/VIETNAMESE DONG'}, <-- Supprimé
-    // usd_php: {id:5015, name:'US DOLLAR/PHILIPPINE PESO'}, <-- Supprimé
-    // usd_uah: {id:5016, name:'US DOLLAR/UKRAINIAN HRYVNIA'}, <-- Supprimé
-    // usd_pkr: {id:5017, name:'US DOLLAR/PAKISTANI RUPEE'}, <-- Supprimé
-    // usd_brl: {id:5018, name:'US DOLLAR/BRAZILIAN REAL'}, <-- Supprimé
     'usd_rub':{id:5019,name:'US DOLLAR/RUSSIAN RUBLE'},
-    // usd_idr: {id:5020, name:'US DOLLAR/INDONESIAN RUPIAH'}, <-- Supprimé
     'usd_try':{id:5021,name:'US DOLLAR/TURKISH LIRA'},
-    // usd_ngn: {id:5022, name:'US DOLLAR/NIGERIAN NAIRA'}, <-- Supprimé
-    // usd_ars: {id:5023, name:'US DOLLAR/ARGENTINE PESO'}, <-- Supprimé
     'eur_aud':{id:5024,name:'EURO/AUSTRALIAN DOLLAR'},
     'gbp_jpy':{id:5025,name:'GREAT BRITAIN POUND/JAPANESE YEN'},
     'chf_jpy':{id:5026,name:'SWISS FRANC/JAPANESE YEN'},
@@ -189,19 +181,16 @@ const META = {
     'gbp_cad':{id:5029,name:'GREAT BRITAIN POUND/CANADIAN DOLLAR'},
     'nzd_jpy':{id:5030,name:'NEW ZEALAND DOLLAR/JAPANESE YEN'},
     
-    // 5500: Commodities
+    // 5500: Commodities (xg_usd supprimé)
     'xau_usd':{id:5500,name:'GOLD/US DOLLAR'},
     'xag_usd':{id:5501,name:'SILVER/US DOLLAR'},
     'wti_usd':{id:5503,name:'WEST TEXAS INTERMEDIATE CRUDE'},
     'xpd_usd':{id:5504,name:'PALLADIUM/US DOLLAR'},
-    'xpt_usd':{id:5505,name:'PLATINUM/US DOLLAR'},
-    'xg_usd':{id:5506,name:'COMMODITY UNKNOWN'}
+    'xpt_usd':{id:5505,name:'PLATINUM/US DOLLAR'}
 };
 
-// 🔴 CRYPTO EST VIDE
 const CRYPTO = []; 
 
-// 🟢 FOREX MIS À JOUR (SANS les paires de devises demandées)
 const FOREX = [
     'eur_usd','usd_jpy','gbp_usd','eur_gbp','usd_krw','usd_hkd','usd_inr','usd_cny','usd_sgd','usd_thb',
     'aud_usd','usd_cad','usd_chf','nzd_usd','usd_rub',
@@ -209,10 +198,8 @@ const FOREX = [
     'nzd_jpy'
 ];
 
-// 🟢 COMMODITIES MIS À JOUR
-const COMMODITIES = ['xau_usd','xag_usd','wti_usd','xpd_usd','xpt_usd','xg_usd'];
+const COMMODITIES = ['xau_usd','xag_usd','wti_usd','xpd_usd','xpt_usd'];
 
-// 🟢 US_EQ & US_ETF MIS À JOUR (Liste complète des actions et ETFs US sans crypto-ETFs)
 const US_EQ = [
     'tsla_usd','msft_usd','nvda_usd','goog_usd','aapl_usd','amzn_usd','meta_usd','nflx_usd','pypl_usd','intc_usd',
     'coin_usd','gme_usd','amd_usd','dis_usd','brk.a_usd','baba_usd','xom_usd','tmo_usd','unh_usd','lly_usd',
@@ -243,7 +230,6 @@ let wss = null;
 // 🔻 Watchdog d’inactivité Supra
 let supraWSLastActivity = 0;
 let supraWSInactivityTimer = null;
-// On passe à 10 secondes pour éviter les reconnexions inutiles
 const SUPRA_INACTIVITY_LIMIT_MS = 10000;
 
 // 🔻 Fallback REST pour flux “stale”
@@ -298,7 +284,7 @@ function isForexLikeOpen(d = new Date()) {
     return false;
 }
 
-const isCryptoOpen = () => false; // Toujours faux car on n'a plus de crypto
+const isCryptoOpen = () => false;
 
 function initCache(p) {
     if (!state[p]) {
@@ -358,6 +344,7 @@ async function fetchOnceREST(pairs) {
     for (const raw of pairs) {
         const p = normalize(raw);
         initCache(p);
+        // Ici on garde l'await pour l'initialisation pour ne pas spammer au boot
         await fetchLatestREST(p);
         await sleep(MIN_GAP_MS);
     }
@@ -399,7 +386,6 @@ function buildSnapshot() {
     const out = {};
     for (const raw of PAIRS) {
         const p = normalize(raw);
-        // On ne construit une snapshot que pour les paires qui existent encore dans META
         if (META[p]) {
             out[p] = buildPageForPair(p);
         }
@@ -421,18 +407,12 @@ function computeOpenSets() {
     const openFx = isForexLikeOpen();
     const openEq = isUsEquityOpen();
 
-    // Crypto
     for (const p of CRYPTO) (openCrypto ? openPairs : closedPairs).add(normalize(p));
-
-    // Forex & Commodities
     for (const p of [...FOREX, ...COMMODITIES]) (openFx ? openPairs : closedPairs).add(normalize(p));
-    
-    // US Equities & ETFs
     for (const p of [...US_EQ, ...US_ETF]) (openEq ? openPairs : closedPairs).add(normalize(p));
 
     for (const raw of PAIRS) {
         const p = normalize(raw);
-        // Ajout d'une vérification pour s'assurer que la paire est toujours dans la liste globale après filtrage
         if (META[p]) { 
              if (!openPairs.has(p) && !closedPairs.has(p)) closedPairs.add(p);
         }
@@ -441,12 +421,7 @@ function computeOpenSets() {
     return { open: [...openPairs], closed: [...closedPairs] };
 }
 
-/**
- * Connexion au WebSocket Supra avec watchdog d’inactivité.
- * Si > 10s sans message, on ferme et on rouvre avec les mêmes paires.
- */
 function openSupraWS(pairs) {
-    // Nettoyer ancienne connexion & timer
     try {
         if (supraWS) supraWS.close();
     } catch {}
@@ -455,20 +430,14 @@ function openSupraWS(pairs) {
     currentWSSet = [...pairs];
     supraWS = new WebSocket(WS_URL, { headers: { 'x-api-key': SUPRA_API_KEY } });
 
-    // Référence locale pour éviter les effets de bord en cas de reconnexion
     const thisWS = supraWS;
 
     thisWS.on('open', () => {
-        // Si entre-temps une nouvelle connexion a été créée, on ignore celle-ci
-        if (supraWS !== thisWS) {
-            console.log('[SupraWS] open (stale) -> ignored');
-            return;
-        }
+        if (supraWS !== thisWS) return;
 
         console.log(`[SupraWS] Open. Subscribing to ${pairs.length} pairs.`);
-        supraWSLastActivity = Date.now(); // on vient d'ouvrir
+        supraWSLastActivity = Date.now();
 
-        // Abonnements
         for (const g of chunk(pairs, CHUNK_SIZE)) {
             const msg = {
                 action: 'subscribe',
@@ -481,9 +450,7 @@ function openSupraWS(pairs) {
             thisWS.send(JSON.stringify(msg));
         }
 
-        // Watchdog d'inactivité : si > 10s sans message, on reconnecte
         supraWSInactivityTimer = setInterval(() => {
-            // Si cette connexion n'est plus la connexion active, on ignore
             if (supraWS !== thisWS) return;
             if (!thisWS || thisWS.readyState !== WebSocket.OPEN) return;
 
@@ -492,17 +459,13 @@ function openSupraWS(pairs) {
                 console.warn(`[SupraWS] No data for ${diff} ms, attempting reconnect...`);
                 clearSupraInactivityTimer();
                 try { thisWS.terminate(); } catch {}
-                // on ré-ouvre avec le même set de paires
                 openSupraWS(currentWSSet);
             }
-        }, 1000); // check chaque seconde
+        }, 1000);
     });
 
     thisWS.on('message', (buf) => {
-        // Ignorer les vieux sockets
         if (supraWS !== thisWS) return;
-
-        // On a reçu un message -> on reset le timer d'inactivité
         supraWSLastActivity = Date.now();
 
         try {
@@ -524,16 +487,13 @@ function openSupraWS(pairs) {
     });
 
     thisWS.on('error', (e) => {
-        if (supraWS !== thisWS) return; // vieux socket, on s'en fout
+        if (supraWS !== thisWS) return;
         console.error('[SupraWS] error:', e?.message || e);
         clearSupraInactivityTimer();
     });
 
     thisWS.on('close', () => {
-        if (supraWS !== thisWS) {
-            console.log('[SupraWS] closed (stale) -> ignored');
-            return;
-        }
+        if (supraWS !== thisWS) return;
         console.log('[SupraWS] closed (active).');
         clearSupraInactivityTimer();
         currentWSSet = [];
@@ -560,9 +520,8 @@ async function rebalance() {
 }
 
 /**
- * Fallback REST plus agressif pour les paires “stale” côté WS.
- * – vérifie toutes les 1s
- * – si pas de WS depuis > 10s et pas de REST depuis > 5s → refait un REST.
+ * Fallback REST: Appelle l'API pour les actifs "stale" un par un,
+ * espacés de 50ms, sans bloquer l'attente de la réponse précédente.
  */
 function startStaleRestRefresher() {
     if (staleRestIntervalStarted) return;
@@ -588,23 +547,23 @@ function startStaleRestRefresher() {
             }
 
             if (candidates.length) {
-                console.log(`[REST-Stale] Refreshing ${candidates.length} stale pairs via REST`);
+                console.log(`[REST-Stale] Refreshing ${candidates.length} stale pairs (50ms gap)`);
             }
 
             for (const p of candidates) {
-                await fetchLatestREST(p);
+                // On n'attend PAS le fetch ici (no await) pour garantir que le prochain appel
+                // partira bien 50ms plus tard, quelle que soit la lenteur du réseau.
+                fetchLatestREST(p).catch(err => console.error(`[REST-Stale] error ${p}:`, err.message));
+                
+                // On attend 50ms avant de passer au candidat suivant
                 await sleep(MIN_GAP_MS);
             }
         })().catch((e) => {
             console.error('[REST-Stale] loop error:', e?.message);
         });
-    }, 1000); // check toutes les 1s
+    }, 1000); // Check loop toutes les 1s
 }
 
-/**
- * Initialise le WebSocketServer pour /ws/prices (sans attacher le server ici)
- * → endpoint inchangé pour les clients : ws://.../ws/prices
- */
 function attachPriceWSS() {
     wss = new WebSocketServer({
         noServer: true,
@@ -626,7 +585,6 @@ function attachPriceWSS() {
         ws.on('pong', () => { ws.isAlive = true; });
     });
 
-    // Tick global (1s)
     setInterval(() => {
         const payload = buildSnapshot();
         wss.clients.forEach((c) => {
@@ -636,7 +594,6 @@ function attachPriceWSS() {
         });
     }, 1000);
 
-    // Heartbeat (pour tes clients, pas pour Supra)
     setInterval(() => {
         wss.clients.forEach((c) => {
             if (c.isAlive === false) c.terminate();
@@ -646,10 +603,6 @@ function attachPriceWSS() {
     }, 30000);
 }
 
-/**
- * Handler d'upgrade pour /ws/prices
- * Appelé depuis server.on('upgrade') dans index.js
- */
 function handlePriceUpgrade(req, socket, head) {
     if (!wss) {
         socket.destroy();
