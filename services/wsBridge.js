@@ -50,14 +50,13 @@ const TZ_NY = 'America/New_York';
 
 const state = {};
 let currentWSSet = [];
-let supraWS = null;
-let wss = null;
 
-// 🔻 Watchdog d’inactivité Supra
-let supraWSLastActivity = 0;
+// 🔻 Modifications pour le pool de connexions Supra
+let supraConnections = []; 
 let supraWSInactivityTimer = null;
-// On passe à 10 secondes pour éviter les reconnexions inutiles
 const SUPRA_INACTIVITY_LIMIT_MS = 10000;
+
+let wss = null;
 
 // 🔻 Fallback REST pour flux “stale”
 const STALE_WS_MAX_AGE_MS = 10000;              // si pas de WS depuis > 10s → considéré stale
@@ -244,34 +243,24 @@ function computeOpenSets() {
 }
 
 /**
- * Connexion au WebSocket Supra avec watchdog d’inactivité.
- * Si > 10s sans message, on ferme et on rouvre avec les mêmes paires.
+ * Fonction interne pour créer une connexion de chunk spécifique
  */
-function openSupraWS(pairs) {
-  // Nettoyer ancienne connexion & timer
-  try {
-    if (supraWS) supraWS.close();
-  } catch {}
-  clearSupraInactivityTimer();
+function connectSupraChunk(group, index) {
+  const ws = new WebSocket(WS_URL, { headers: { 'x-api-key': SUPRA_API_KEY } });
+  
+  // On stocke l'état de la connexion
+  const connObj = { ws, group, lastActivity: Date.now() };
+  supraConnections[index] = connObj;
 
-  currentWSSet = [...pairs];
-  supraWS = new WebSocket(WS_URL, { headers: { 'x-api-key': SUPRA_API_KEY } });
+  ws.on('open', () => {
+    // Évite les effets de bord si rebalance() a recréé les sockets entre-temps
+    if (supraConnections[index]?.ws !== ws) return;
 
-  // Référence locale pour éviter les effets de bord en cas de reconnexion
-  const thisWS = supraWS;
+    console.log(`[SupraWS] Chunk ${index + 1}/3 Open. Subscribing to ${group.length} pairs.`);
+    connObj.lastActivity = Date.now();
 
-  thisWS.on('open', () => {
-    // Si entre-temps une nouvelle connexion a été créée, on ignore celle-ci
-    if (supraWS !== thisWS) {
-      console.log('[SupraWS] open (stale) -> ignored');
-      return;
-    }
-
-    console.log(`[SupraWS] Open. Subscribing to ${pairs.length} pairs.`);
-    supraWSLastActivity = Date.now(); // on vient d'ouvrir
-
-    // Abonnements
-    for (const g of chunk(pairs, CHUNK_SIZE)) {
+    // Abonnements pour ce chunk
+    for (const g of chunk(group, CHUNK_SIZE)) {
       const msg = {
         action: 'subscribe',
         channels: [{
@@ -280,32 +269,15 @@ function openSupraWS(pairs) {
           tradingPairs: g
         }]
       };
-      thisWS.send(JSON.stringify(msg));
+      ws.send(JSON.stringify(msg));
     }
-
-    // Watchdog d'inactivité : si > 10s sans message, on reconnecte
-    supraWSInactivityTimer = setInterval(() => {
-      // Si cette connexion n'est plus la connexion active, on ignore
-      if (supraWS !== thisWS) return;
-      if (!thisWS || thisWS.readyState !== WebSocket.OPEN) return;
-
-      const diff = Date.now() - supraWSLastActivity;
-      if (diff > SUPRA_INACTIVITY_LIMIT_MS) {
-        console.warn(`[SupraWS] No data for ${diff} ms, attempting reconnect...`);
-        clearSupraInactivityTimer();
-        try { thisWS.terminate(); } catch {}
-        // on ré-ouvre avec le même set de paires
-        openSupraWS(currentWSSet);
-      }
-    }, 1000); // check chaque seconde
   });
 
-  thisWS.on('message', (buf) => {
-    // Ignorer les vieux sockets
-    if (supraWS !== thisWS) return;
-
-    // On a reçu un message -> on reset le timer d'inactivité
-    supraWSLastActivity = Date.now();
+  ws.on('message', (buf) => {
+    if (supraConnections[index]?.ws !== ws) return;
+    
+    // On reset l'activité de CE chunk spécifique
+    connObj.lastActivity = Date.now();
 
     try {
       const msg = JSON.parse(buf.toString());
@@ -325,21 +297,62 @@ function openSupraWS(pairs) {
     }
   });
 
-  thisWS.on('error', (e) => {
-    if (supraWS !== thisWS) return; // vieux socket, on s'en fout
-    console.error('[SupraWS] error:', e?.message || e);
-    clearSupraInactivityTimer();
+  ws.on('error', (e) => {
+    if (supraConnections[index]?.ws !== ws) return;
+    console.error(`[SupraWS] Chunk ${index + 1}/3 error:`, e?.message || e);
   });
 
-  thisWS.on('close', () => {
-    if (supraWS !== thisWS) {
-      console.log('[SupraWS] closed (stale) -> ignored');
-      return;
-    }
-    console.log('[SupraWS] closed (active).');
-    clearSupraInactivityTimer();
-    currentWSSet = [];
+  ws.on('close', () => {
+    if (supraConnections[index]?.ws !== ws) return;
+    console.log(`[SupraWS] Chunk ${index + 1}/3 closed.`);
+    // Le Watchdog gérera la reconnexion automatique
   });
+}
+
+/**
+ * Connexion au WebSocket Supra découpée en 3 chunks.
+ * Le watchdog surveille chaque chunk indépendamment.
+ */
+function openSupraWS(pairs) {
+  // 1. Nettoyer anciennes connexions & timer global
+  supraConnections.forEach(conn => {
+    try { if (conn && conn.ws) conn.ws.close(); } catch {}
+  });
+  supraConnections = [];
+  clearSupraInactivityTimer();
+
+  currentWSSet = [...pairs];
+
+  if (pairs.length === 0) return;
+
+  // 2. Découper la charge en 3 chunks
+  const numChunks = 3;
+  const groups = chunk(pairs, Math.ceil(pairs.length / numChunks));
+
+  // 3. Ouvrir chaque chunk
+  groups.forEach((group, index) => {
+    connectSupraChunk(group, index);
+  });
+
+  // 4. Watchdog d'inactivité unifié (vérifie chaque chunk)
+  supraWSInactivityTimer = setInterval(() => {
+    const now = Date.now();
+    
+    supraConnections.forEach((conn, index) => {
+      if (!conn || !conn.ws) return;
+      
+      // On ignore la vérification si la connexion est en cours d'ouverture
+      if (conn.ws.readyState === WebSocket.CONNECTING) return;
+
+      const diff = now - conn.lastActivity;
+      if (diff > SUPRA_INACTIVITY_LIMIT_MS) {
+        console.warn(`[SupraWS] Chunk ${index + 1}/3 No data for ${diff} ms, attempting reconnect...`);
+        try { conn.ws.terminate(); } catch {}
+        // On relance UNIQUEMENT ce chunk défaillant
+        connectSupraChunk(conn.group, index);
+      }
+    });
+  }, 1000);
 }
 
 async function rebalance() {
