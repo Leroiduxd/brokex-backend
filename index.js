@@ -23,6 +23,13 @@ const {
 // 🟢 3. Service /ws/raw (flux brut Supra enrichi)
 const { attachRawWSS, handleRawUpgrade } = require('./services/supraRawWS');
 
+// 🟢 4. Nouveau service /ws/ostium-prices
+const {
+  attachOstiumPriceWSS,
+  handleOstiumPriceUpgrade,
+  startOstiumPriceScheduler
+} = require('./services/ostiumPricesWS');
+
 const PORT = 3000; // port unique REST + WSS
 
 const app = express();
@@ -42,58 +49,49 @@ app.get('/healthz', (_req, res) => {
 const server = http.createServer(app);
 
 // ─────────────────────────────────────────────
-// Initialisation des 3 WebSocketServer
+// Initialisation des WebSocketServer
 // ─────────────────────────────────────────────
-
-// Service original (wsBridge.js) → /ws/prices
 attachPriceWSS();
-
-// Nouveau service (rawwsBridge.js) → /ws/pricesraw
 attachRawPriceWSS();
-
-// Service raw existant → /ws/raw
 attachRawWSS();
+attachOstiumPriceWSS();
 
 // ─────────────────────────────────────────────
 // Routing des upgrades WebSocket selon le path
 // ─────────────────────────────────────────────
-
 server.on('upgrade', (req, socket, head) => {
-  // === Endpoint Original : /ws/prices ===
   if (req.url === '/ws/prices') {
     return handlePriceUpgrade(req, socket, head);
   }
 
-  // === Nouveau endpoint : /ws/pricesraw ===
   if (req.url === '/ws/pricesraw') {
     return handleRawPriceUpgrade(req, socket, head);
   }
 
-  // === Endpoint "raw" existant ===
   if (req.url === '/ws/raw') {
     return handleRawUpgrade(req, socket, head);
   }
 
-  // Autres chemins → on ferme
+  if (req.url === '/ws/ostium-prices') {
+    return handleOstiumPriceUpgrade(req, socket, head);
+  }
+
   socket.destroy();
 });
 
 // ─────────────────────────────────────────────
-// Schedulers : WS Supra + REST refresh
+// Schedulers
 // ─────────────────────────────────────────────
-
-// Scheduler pour /ws/prices (crypto + petit set)
 rebalanceScheduler();
-
-// Scheduler pour /ws/pricesraw (RWA / Forex / Commodities)
 rebalanceSchedulerRaw();
+startOstiumPriceScheduler();
 
 server.listen(PORT, () => {
   console.log(`🚀 REST+WSS listening on http://127.0.0.1:${PORT}`);
   console.log(`   - GET /proof?pairs=0,1,2`);
   console.log(`   - GET /history?pair=1&interval=3600`);
-  console.log(`   - WSS /ws/prices      (Service WS Bridge original)`);
-  console.log(`   - WSS /ws/pricesraw   (NOUVEAU Service Raw WS Bridge)`);
-  console.log(`   - WSS /ws/raw         (Flux brut Supra enrichi pairId/pairName)`);
+  console.log(`   - WSS /ws/prices`);
+  console.log(`   - WSS /ws/pricesraw`);
+  console.log(`   - WSS /ws/raw`);
+  console.log(`   - WSS /ws/ostium-prices`);
 });
-
