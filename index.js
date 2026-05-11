@@ -5,6 +5,8 @@ const cors = require('cors');
 
 const proofRouter = require('./services/proof');
 const historyRouter = require('./services/history');
+// 🟢 NOUVEAU : Import du routeur Pyth
+const pythRouter = require('./services/pyth');
 
 // 🟢 1. Service original /ws/prices (crypto + petit set)
 const {
@@ -39,6 +41,7 @@ app.use(express.json({ limit: '512kb' }));
 // APIs REST
 app.use(proofRouter);    // GET /proof
 app.use(historyRouter);  // GET /history
+app.use(pythRouter);     // GET /pyth/history (🟢 NOUVELLE ROUTE)
 
 // Healthcheck
 app.get('/healthz', (_req, res) => {
@@ -90,6 +93,7 @@ server.listen(PORT, () => {
   console.log(`🚀 REST+WSS listening on http://127.0.0.1:${PORT}`);
   console.log(`   - GET /proof?pairs=0,1,2`);
   console.log(`   - GET /history?pair=1&interval=3600`);
+  console.log(`   - GET /pyth/history?symbol=Crypto.BTC/USD&resolution=60&from=...&to=...`);
   console.log(`   - WSS /ws/prices`);
   console.log(`   - WSS /ws/pricesraw`);
   console.log(`   - WSS /ws/raw`);
